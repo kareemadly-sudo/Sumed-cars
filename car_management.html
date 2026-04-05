@@ -591,19 +591,38 @@ function setSyncStatus(type,msg){
 
 // ===== SAVE: local first, then Firebase =====
 function save(){
-  lsSet('svc_lic', JSON.stringify(licenses));
-  lsSet('svc_mnt', JSON.stringify(maintenances));
+  // Save without images first (safe, small size)
+  const licNoImg = licenses.map(l=>({...l, img: l.img ? '__has_img__' : null}));
+  const mntNoImg = maintenances.map(m=>({...m, img: m.img ? '__has_img__' : null}));
+  lsSet('svc_lic', JSON.stringify(licNoImg));
+  lsSet('svc_mnt', JSON.stringify(mntNoImg));
+  // Save images separately per record
+  licenses.forEach((l,i)=>{ if(l.img&&l.img!=='__has_img__') lsSet('svc_lic_img_'+i, l.img); });
+  maintenances.forEach((m,i)=>{ if(m.img&&m.img!=='__has_img__') lsSet('svc_mnt_img_'+i, m.img); });
   setSyncStatus('warn','⏳ محفوظ محلياً...');
   if(_db && _uid) _syncUp();
+}
+
+function lsGetFull(key){
+  // Reconstruct records with their images
+  const raw = lsGet(key);
+  if(!raw) return [];
+  const arr = JSON.parse(raw);
+  const prefix = key==='svc_lic' ? 'svc_lic_img_' : 'svc_mnt_img_';
+  arr.forEach((item,i)=>{ if(item.img==='__has_img__'){ item.img = lsGet(prefix+i)||null; } });
+  return arr;
 }
 
 async function _syncUp(){
   try{
     const {doc, setDoc} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
     const ref = doc(_db, 'users', _uid);
+    // Strip large images before syncing (keep only first 200KB per image)
+    const licSync = licenses.map(l=>({...l, img: l.img&&l.img.length<200000 ? l.img : (l.img?'__has_img__':null)}));
+    const mntSync = maintenances.map(m=>({...m, img: m.img&&m.img.length<200000 ? m.img : (m.img?'__has_img__':null)}));
     await setDoc(ref, {
-      licenses: JSON.stringify(licenses),
-      maintenances: JSON.stringify(maintenances),
+      licenses: JSON.stringify(licSync),
+      maintenances: JSON.stringify(mntSync),
       updatedAt: new Date().toISOString()
     });
     setSyncStatus('ok','✅ متزامن — '+new Date().toLocaleTimeString('ar-EG'));
@@ -652,9 +671,8 @@ async function _syncDown(){
 async function loadData(){
   // 1. Load local immediately
   try{
-    const l=lsGet('svc_lic'), m=lsGet('svc_mnt');
-    licenses = l ? JSON.parse(l) : [];
-    maintenances = m ? JSON.parse(m) : [];
+    licenses = lsGetFull('svc_lic');
+    maintenances = lsGetFull('svc_mnt');
   }catch(e){ licenses=[]; maintenances=[]; }
   renderDash();
   // Show immediate status
