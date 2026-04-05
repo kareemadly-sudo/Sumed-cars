@@ -584,7 +584,7 @@ function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 function setSyncStatus(type,msg){
   document.querySelectorAll('.sync-status-el').forEach(el=>{
     const s={ok:'#D5F5E3;color:#1E8449',warn:'#FEF9E7;color:#9A7D0A',err:'#FDEDEC;color:#C0392B',info:'#EBF5FB;color:#1A5276'};
-    el.style.cssText='padding:5px 10px;border-radius:6px;font-size:11px;margin-top:6px;display:block;background:'+s[type];
+    el.style.cssText='padding:5px 8px;border-radius:6px;font-size:11px;margin-top:6px;display:block;background:'+s[type];
     el.textContent=msg;
   });
 }
@@ -622,13 +622,25 @@ async function _syncDown(){
       const d = snap.data();
       const fbL = d.licenses ? JSON.parse(d.licenses) : [];
       const fbM = d.maintenances ? JSON.parse(d.maintenances) : [];
-      if(fbL.length >= licenses.length){ licenses = fbL; lsSet('svc_lic', JSON.stringify(licenses)); }
-      if(fbM.length >= maintenances.length){ maintenances = fbM; lsSet('svc_mnt', JSON.stringify(maintenances)); }
+      // Firebase is source of truth when logged in
+      licenses = fbL.length > 0 ? fbL : licenses;
+      maintenances = fbM.length > 0 ? fbM : maintenances;
+      lsSet('svc_lic', JSON.stringify(licenses));
+      lsSet('svc_mnt', JSON.stringify(maintenances));
       renderDash();
-      setSyncStatus('ok','✅ متزامن — آخر تحديث: '+new Date(d.updatedAt||Date.now()).toLocaleTimeString('ar-EG'));
+      // Refresh current open page
+      const ap=document.querySelector('.page.active');
+      if(ap){ const pid=ap.id.replace('page-',''); if(pid==='license')renderLic(); if(pid==='maintenance')renderMnt(); }
+      setSyncStatus('ok','✅ متزامن — '+new Date(d.updatedAt||Date.now()).toLocaleTimeString('ar-EG'));
     } else {
-      if(licenses.length || maintenances.length) _syncUp();
-      else setSyncStatus('ok','✅ متصل بـ Firebase');
+      // No data on Firebase yet
+      if(licenses.length || maintenances.length){
+        // Push local data to Firebase
+        _syncUp();
+        setSyncStatus('info','⬆️ جاري رفع البيانات المحلية...');
+      } else {
+        setSyncStatus('ok','✅ متصل — لا توجد بيانات بعد');
+      }
     }
     if(lsGet('svc_pending')==='1') _syncUp();
   }catch(e){
@@ -645,6 +657,12 @@ async function loadData(){
     maintenances = m ? JSON.parse(m) : [];
   }catch(e){ licenses=[]; maintenances=[]; }
   renderDash();
+  // Show immediate status
+  if(window.location.protocol==='file:'){
+    setSyncStatus('warn','💾 محلي فقط (file://) — افتح من GitHub للتزامن');
+  } else {
+    setSyncStatus('info','🔄 جاري الاتصال...');
+  }
   // 2. Init Firebase in background
   try{
     const {initializeApp} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js');
@@ -1455,7 +1473,7 @@ async function extRun(e,t){
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:content}]})
     });
     var rawText=await resp.text();
-    if(!resp.ok) throw new Error('خطأ HTTP '+resp.status+': '+rawText.substring(0,200));
+    if(!resp.ok) throw new Error('خطأ HTTP '+resp.status+' — '+rawText.substring(0,300));
     var data=JSON.parse(rawText);
     if(data.error) throw new Error(data.error.message||'API error');
     var txt=(data.content||[]).map(c=>c.text||'').join('');
