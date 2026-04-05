@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>استخراج بيانات الرخص والفواتير</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&display=swap');
+:root{--primary:#1B4F72;--pl:#2E86C1;--ok:#1E8449;--danger:#C0392B;--warn:#E67E22;--bg:#F0F3F7;--card:#fff;--border:#D5D8DC;--text:#1C2833;--muted:#7F8C8D}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;direction:rtl;padding:24px}
+h1{font-size:20px;font-weight:700;color:var(--primary);margin-bottom:4px}
+.subtitle{font-size:13px;color:var(--muted);margin-bottom:24px}
+.card{background:var(--card);border-radius:12px;border:1px solid var(--border);padding:20px;margin-bottom:16px}
+.tabs{display:flex;gap:8px;margin-bottom:20px}
+.tab{padding:8px 20px;border-radius:8px;border:1px solid var(--border);cursor:pointer;font-size:13px;font-weight:600;font-family:'Cairo',sans-serif;background:var(--bg);color:var(--muted);transition:all .15s}
+.tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.upzone{border:2px dashed var(--pl);border-radius:10px;padding:28px;text-align:center;background:#EBF5FB;cursor:pointer;position:relative;transition:all .2s;margin-bottom:14px}
+.upzone:hover{background:#D6EAF8;border-color:var(--primary)}
+.upzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.upzone-ico{font-size:32px;margin-bottom:8px}
+.upzone p{font-size:13px;color:var(--muted)}
+.upzone strong{color:var(--pl)}
+.prev-box{margin-bottom:14px;display:none}
+.prev-box img{max-height:140px;border-radius:8px;border:1px solid var(--border);cursor:pointer}
+.pdf-tag{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;background:#EBF5FB;border:1px solid #AED6F1;border-radius:8px;font-size:13px;color:var(--primary);cursor:pointer}
+.status-box{border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:14px;display:none;align-items:center;gap:10px}
+.status-box.show{display:flex}
+.status-box.loading{background:#EBF5FB;border:1px solid #AED6F1;color:var(--primary)}
+.status-box.ok{background:#D5F5E3;border:1px solid #A9DFBF;color:var(--ok)}
+.status-box.err{background:#FDEDEC;border:1px solid #FADBD8;color:var(--danger)}
+.spin{width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;flex-shrink:0}
+@keyframes sp{to{transform:rotate(360deg)}}
+.fields{display:none}
+.fields.show{display:block}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+.fg{display:flex;flex-direction:column;gap:4px}
+.fg label{font-size:11px;font-weight:600;color:var(--muted)}
+.fg input,.fg textarea{border:1px solid var(--border);border-radius:7px;padding:9px 12px;font-size:13px;font-family:'Cairo',sans-serif;color:var(--text);background:var(--card);outline:none;direction:rtl}
+.fg input:focus,.fg textarea:focus{border-color:var(--pl);box-shadow:0 0 0 3px rgba(46,134,193,.1)}
+.fg.full{grid-column:1/-1}
+.fg textarea{min-height:70px;resize:vertical}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap}
+.btn{padding:9px 18px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:'Cairo',sans-serif;transition:all .2s;display:inline-flex;align-items:center;gap:6px}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:var(--pl)}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text)}.btn-ghost:hover{background:var(--bg)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:200}
+.modal-bg.open{display:flex}
+.modal-img-wrap{max-width:95vw;max-height:95vh;position:relative}
+.modal-img-wrap img{max-width:95vw;max-height:92vh;border-radius:8px;display:block}
+.modal-close{position:absolute;top:-36px;left:0;background:none;border:none;color:#fff;font-size:28px;cursor:pointer;padding:4px 8px}
+.note{background:#FEF9E7;border:1px solid #F9E79F;border-radius:8px;padding:12px 14px;font-size:13px;color:#9A7D0A;margin-bottom:16px}
+.diag-btn{font-size:12px;color:var(--muted);text-decoration:underline;cursor:pointer;background:none;border:none;font-family:'Cairo',sans-serif;padding:0}
+.diag-log{background:#1C2833;color:#82E0AA;font-family:monospace;font-size:12px;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto;margin-top:10px;display:none;direction:ltr;text-align:left}
+</style>
+</head>
+<body>
+
+<h1>🔍 استخراج بيانات الرخص والفواتير</h1>
+<p class="subtitle">ارفع صورة أو PDF — يُستخرج البيانات تلقائياً بالذكاء الاصطناعي</p>
+
+<div class="note">
+  ⚠️ <strong>مهم:</strong> هذه الأداة تحتاج اتصال بالإنترنت للتواصل مع الذكاء الاصطناعي.
+  إذا ظهر خطأ، اضغط <button class="diag-btn" onclick="runDiag()">تشخيص المشكلة</button> لمعرفة السبب.
+  <div class="diag-log" id="diag-log"></div>
+</div>
+
+<div class="tabs">
+  <button class="tab on" onclick="setTab(0)">📄 رخصة / تصريح تسيير</button>
+  <button class="tab" onclick="setTab(1)">🧾 فاتورة صيانة</button>
+</div>
+
+<!-- TAB 0: LICENSE -->
+<div id="panel-0">
+  <div class="card">
+    <div class="upzone">
+      <input type="file" accept="image/*,.pdf" onchange="run(event,0)">
+      <div class="upzone-ico">📄</div>
+      <p><strong>اضغط لرفع صورة أو PDF الرخصة</strong></p>
+      <p style="font-size:11px;margin-top:4px">JPG · PNG · WEBP · PDF — عربي وإنجليزي</p>
+    </div>
+    <div class="prev-box" id="prev-0"></div>
+    <div class="status-box" id="st-0"><div class="spin" id="sp-0" style="display:none"></div><span id="st-txt-0"></span></div>
+    <div class="fields" id="flds-0">
+      <div style="font-size:13px;font-weight:700;color:var(--primary);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">البيانات المستخرجة — راجعها وعدّل إذا لزم</div>
+      <div class="grid2">
+        <div class="fg"><label>رقم السيارة</label><input id="L-plate" placeholder="رقم اللوحة"></div>
+        <div class="fg"><label>نوع السيارة / الماركة</label><input id="L-type" placeholder="مثال: فورد 350 بيك اب"></div>
+        <div class="fg"><label>نوع الترخيص</label><input id="L-lictype" placeholder="ملاكي / نقل / تصريح تسيير..."></div>
+        <div class="fg"><label>سنة الصنع</label><input id="L-year" placeholder="مثال: 2005"></div>
+        <div class="fg"><label>رقم الموتور</label><input id="L-engine"></div>
+        <div class="fg"><label>رقم الشاسيه</label><input id="L-chassis"></div>
+        <div class="fg"><label>تاريخ الإصدار (بداية)</label><input id="L-start" placeholder="YYYY-MM-DD"></div>
+        <div class="fg"><label>تاريخ الانتهاء</label><input id="L-end" placeholder="YYYY-MM-DD"></div>
+        <div class="fg full"><label>التصريح / ملاحظات</label><input id="L-permit"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="copyData(0)">📋 نسخ البيانات</button>
+        <button class="btn btn-ghost" onclick="clearTab(0)">مسح</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TAB 1: MAINTENANCE -->
+<div id="panel-1" style="display:none">
+  <div class="card">
+    <div class="upzone">
+      <input type="file" accept="image/*,.pdf" onchange="run(event,1)">
+      <div class="upzone-ico">🧾</div>
+      <p><strong>اضغط لرفع صورة أو PDF الفاتورة</strong></p>
+      <p style="font-size:11px;margin-top:4px">JPG · PNG · WEBP · PDF — عربي وإنجليزي</p>
+    </div>
+    <div class="prev-box" id="prev-1"></div>
+    <div class="status-box" id="st-1"><div class="spin" id="sp-1" style="display:none"></div><span id="st-txt-1"></span></div>
+    <div class="fields" id="flds-1">
+      <div style="font-size:13px;font-weight:700;color:var(--primary);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">البيانات المستخرجة — راجعها وعدّل إذا لزم</div>
+      <div class="grid2">
+        <div class="fg"><label>رقم السيارة</label><input id="M-plate" placeholder="رقم اللوحة"></div>
+        <div class="fg"><label>مركز الإصلاح / الورشة</label><input id="M-ws" placeholder="اسم الورشة"></div>
+        <div class="fg"><label>تاريخ الفاتورة</label><input id="M-date" placeholder="YYYY-MM-DD"></div>
+        <div class="fg"><label>رقم الفاتورة</label><input id="M-inv"></div>
+        <div class="fg full"><label>إجمالي المبلغ (جنيه — أرقام فقط)</label><input id="M-total" placeholder="مثال: 2031"></div>
+        <div class="fg full"><label>بيان الإصلاح</label><textarea id="M-desc"></textarea></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="copyData(1)">📋 نسخ البيانات</button>
+        <button class="btn btn-ghost" onclick="clearTab(1)">مسح</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Image modal -->
+<div class="modal-bg" id="img-modal">
+  <div class="modal-img-wrap">
+    <button class="modal-close" onclick="document.getElementById('img-modal').classList.remove('open')">✕</button>
+    <img id="modal-img-el">
+  </div>
+</div>
+
+<script>
+// ===== TAB =====
+function setTab(t){
+  document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',i===t));
+  document.getElementById('panel-0').style.display=t===0?'block':'none';
+  document.getElementById('panel-1').style.display=t===1?'block':'none';
+}
+
+// ===== STATUS =====
+function setStatus(t,type,msg){
+  var el=document.getElementById('st-'+t);
+  var sp=document.getElementById('sp-'+t);
+  el.className='status-box show '+type;
+  sp.style.display=type==='loading'?'block':'none';
+  document.getElementById('st-txt-'+t).textContent=msg;
+}
+
+// ===== FILE TO BASE64 =====
+function toB64(file){
+  return new Promise(function(res,rej){
+    var r=new FileReader();
+    r.onload=function(){res(r.result.split(',')[1]);};
+    r.onerror=rej;
+    r.readAsDataURL(file);
+  });
+}
+
+// ===== SHOW PREVIEW =====
+function showPrev(t, file){
+  var box=document.getElementById('prev-'+t);
+  box.style.display='block';
+  if(file.type.startsWith('image/')){
+    var url=URL.createObjectURL(file);
+    box.innerHTML='<img src="'+url+'" style="max-height:140px;border-radius:8px;border:1px solid var(--border);cursor:pointer" onclick="document.getElementById(\'modal-img-el\').src=this.src;document.getElementById(\'img-modal\').classList.add(\'open\')">';
+  } else {
+    box.innerHTML='<div class="pdf-tag">📄 '+file.name+'</div>';
+  }
+}
+
+// ===== MAIN EXTRACT =====
+async function run(e,t){
+  var file=e.target.files[0]; if(!file) return;
+  showPrev(t, file);
+  document.getElementById('flds-'+t).className='fields';
+  setStatus(t,'loading','جاري قراءة الملف...');
+
+  try{
+    var b64=await toB64(file);
+    var isPDF=file.type==='application/pdf';
+    setStatus(t,'loading','جاري إرسال الملف للتحليل...');
+
+    // Build headers - add beta for PDF
+    var hdrs={
+      'Content-Type':'application/json',
+      'anthropic-dangerous-direct-browser-access':'true'
+    };
+    if(isPDF) hdrs['anthropic-beta']='pdfs-2024-09-25';
+
+    // Build prompt
+    var prompt = t===0
+      ? 'أنت نظام استخراج بيانات للوثائق المصرية. استخرج من هذا المستند (رخصة تسيير أو تصريح تسيير) واعد JSON صحيح فقط بدون أي نص آخر:\n{"plate":"رقم اللوحة كما هو","carType":"نوع وموديل السيارة","year":"سنة الصنع","licType":"نوع الترخيص مثل تصريح تسيير","engine":"رقم الموتور","chassis":"رقم الشاسيه","startDate":"تاريخ الإصدار YYYY-MM-DD","endDate":"تاريخ الانتهاء YYYY-MM-DD","permit":"رقم التصريح"}\nتحويل: ٢٠٢٦/٠٦/٢٩=2026-06-29. JSON فقط لا شيء آخر.'
+      : 'أنت نظام استخراج بيانات للفواتير المصرية. استخرج من هذه الفاتورة (فاتورة صيانة سيارة) واعد JSON صحيح فقط بدون أي نص آخر:\n{"plate":"رقم السيارة - ابحث في الوصف مثل للسيارة 6915","workshop":"اسم البائع أو الورشة","date":"تاريخ الفاتورة YYYY-MM-DD","invNum":"رقم الفاتورة أو الرقم الداخلي","total":"اجمالي المبلغ النهائي بعد الضريبة رقم فقط","desc":"جميع بنود الإصلاح مجمعة"}\nتحويل: ٢٠٢٦/٠٣/٢٦=2026-03-26. JSON فقط لا شيء آخر.';
+
+    // Build content
+    var content = isPDF
+      ? [{type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},{type:'text',text:prompt}]
+      : [{type:'image',source:{type:'base64',media_type:file.type,data:b64}},{type:'text',text:prompt}];
+
+    setStatus(t,'loading','جاري تحليل المستند بالذكاء الاصطناعي...');
+
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:hdrs,
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:content}]})
+    });
+
+    var rawText=await resp.text();
+
+    if(!resp.ok){
+      throw new Error('خطأ HTTP '+resp.status+'\n'+rawText.substring(0,300));
+    }
+
+    var data=JSON.parse(rawText);
+    if(data.error) throw new Error(data.error.message||JSON.stringify(data.error));
+
+    var txt=(data.content||[]).map(function(c){return c.text||'';}).join('');
+    if(!txt) throw new Error('الاستجابة فارغة من الـ API');
+
+    var m=txt.match(/\{[\s\S]*?\}/);
+    if(!m) throw new Error('لم يُرجع JSON. الاستجابة:\n'+txt.substring(0,200));
+
+    var p=JSON.parse(m[0]);
+
+    if(t===0){
+      document.getElementById('L-plate').value=p.plate||'';
+      document.getElementById('L-type').value=p.carType||'';
+      document.getElementById('L-lictype').value=p.licType||'';
+      document.getElementById('L-year').value=p.year||'';
+      document.getElementById('L-engine').value=p.engine||'';
+      document.getElementById('L-chassis').value=p.chassis||'';
+      document.getElementById('L-start').value=p.startDate||'';
+      document.getElementById('L-end').value=p.endDate||'';
+      document.getElementById('L-permit').value=p.permit||'';
+    } else {
+      document.getElementById('M-plate').value=p.plate||'';
+      document.getElementById('M-ws').value=p.workshop||'';
+      document.getElementById('M-date').value=p.date||'';
+      document.getElementById('M-inv').value=p.invNum||'';
+      document.getElementById('M-total').value=p.total||'';
+      document.getElementById('M-desc').value=p.desc||'';
+    }
+
+    setStatus(t,'ok','✅ تم الاستخراج بنجاح — راجع البيانات وعدّل إذا لزم');
+    document.getElementById('flds-'+t).className='fields show';
+
+  } catch(err){
+    var msg=err.message||String(err);
+    setStatus(t,'err','⚠️ '+msg);
+    console.error(err);
+  }
+}
+
+// ===== COPY =====
+function copyData(t){
+  var lines;
+  if(t===0){
+    lines=[
+      'رقم السيارة: '+document.getElementById('L-plate').value,
+      'نوع السيارة: '+document.getElementById('L-type').value,
+      'نوع الترخيص: '+document.getElementById('L-lictype').value,
+      'سنة الصنع: '+document.getElementById('L-year').value,
+      'رقم الموتور: '+document.getElementById('L-engine').value,
+      'رقم الشاسيه: '+document.getElementById('L-chassis').value,
+      'بداية الترخيص: '+document.getElementById('L-start').value,
+      'نهاية الترخيص: '+document.getElementById('L-end').value,
+      'التصريح: '+document.getElementById('L-permit').value,
+    ];
+  } else {
+    lines=[
+      'رقم السيارة: '+document.getElementById('M-plate').value,
+      'مركز الإصلاح: '+document.getElementById('M-ws').value,
+      'تاريخ الفاتورة: '+document.getElementById('M-date').value,
+      'رقم الفاتورة: '+document.getElementById('M-inv').value,
+      'إجمالي المبلغ: '+document.getElementById('M-total').value,
+      'بيان الإصلاح: '+document.getElementById('M-desc').value,
+    ];
+  }
+  var txt=lines.join('\n');
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(function(){
+      alert('✅ تم النسخ! الصق البيانات في حقول البرنامج');
+    }).catch(function(){
+      prompt('انسخ النص يدوياً:',txt);
+    });
+  } else {
+    prompt('انسخ النص يدوياً:',txt);
+  }
+}
+
+// ===== CLEAR =====
+function clearTab(t){
+  document.getElementById('prev-'+t).style.display='none';
+  document.getElementById('st-'+t).className='status-box';
+  document.getElementById('flds-'+t).className='fields';
+  if(t===0){
+    ['L-plate','L-type','L-lictype','L-year','L-engine','L-chassis','L-start','L-end','L-permit'].forEach(function(id){document.getElementById(id).value='';});
+  } else {
+    ['M-plate','M-ws','M-date','M-inv','M-total','M-desc'].forEach(function(id){document.getElementById(id).value='';});
+  }
+}
+
+// ===== DIAG =====
+async function runDiag(){
+  var log=document.getElementById('diag-log');
+  log.style.display='block';
+  log.textContent='';
+  function w(msg){log.textContent+=msg+'\n';log.scrollTop=log.scrollHeight;}
+
+  w('=== تشخيص ===');
+  w('Protocol: '+window.location.protocol);
+  w('Origin: '+window.location.origin);
+  w('In iframe: '+(window!==window.parent));
+
+  if(window.location.protocol==='file:'){
+    w('❌ مفتوح كـ file:// — CORS محجوب!');
+    w('الحل: افتح الملف عبر متصفح ويب أو من claude.ai');
+    return;
+  }
+
+  w('اختبار API...');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:10,messages:[{role:'user',content:'hi'}]})
+    });
+    var txt=await r.text();
+    w('HTTP: '+r.status);
+    w('Response: '+txt.substring(0,200));
+    if(r.ok) w('✅ API تعمل!');
+    else w('❌ خطأ: '+txt.substring(0,100));
+  }catch(e){
+    w('❌ Exception: '+e.name+': '+e.message);
+  }
+  w('=== انتهى ===');
+}
+
+// Close modal on bg click
+document.getElementById('img-modal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('open');});
+</script>
+</body>
+</html>
