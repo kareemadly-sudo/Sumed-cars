@@ -576,42 +576,67 @@ const FB_CFG = {
   appId:"1:14266236779:web:db540ccba922fdfe3a962e"
 };
 
-// ===== INDEXED DB — مساحة تخزين كبيرة للصور =====
+// ===== STORAGE: IndexedDB + localStorage fallback =====
 let _idb = null;
+let _idbReady = false;
+let _idbPromise = null;
 
-function openIDB(){
-  return new Promise((res,rej)=>{
-    const req = indexedDB.open('sumed_cars_db', 1);
-    req.onupgradeneeded = e => {
-      const db = e.target.result;
-      if(!db.objectStoreNames.contains('data')) db.createObjectStore('data');
-    };
-    req.onsuccess = e => { _idb = e.target.result; res(_idb); };
-    req.onerror = () => rej(req.error);
+function getIDB(){
+  // Always return same promise — open once, reuse forever
+  if(_idbPromise) return _idbPromise;
+  _idbPromise = new Promise((res,rej)=>{
+    try{
+      const req = indexedDB.open('sumed_cars_v2', 1);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      };
+      req.onsuccess = e => {
+        _idb = e.target.result;
+        _idbReady = true;
+        res(_idb);
+      };
+      req.onerror = () => { _idbPromise=null; rej(req.error); };
+      req.onblocked = () => { _idbPromise=null; rej(new Error('IDB blocked')); };
+    }catch(e){ _idbPromise=null; rej(e); }
   });
+  return _idbPromise;
 }
 
-function idbSet(key, val){
-  return new Promise((res,rej)=>{
-    if(!_idb){ res(); return; }
-    const tx = _idb.transaction('data','readwrite');
-    tx.objectStore('data').put(val, key);
-    tx.oncomplete = res;
-    tx.onerror = () => rej(tx.error);
-  });
+async function idbSet(key, val){
+  try{
+    const db = await getIDB();
+    return new Promise((res,rej)=>{
+      const tx = db.transaction('kv','readwrite');
+      tx.objectStore('kv').put(val, key);
+      tx.oncomplete = ()=>res(true);
+      tx.onerror = ()=>rej(tx.error);
+    });
+  }catch(e){
+    // Fallback to localStorage for small values
+    try{ localStorage.setItem('idb_'+key, typeof val==='string'&&val.length<500000?val:'__toolarge__'); }catch(_){}
+    return false;
+  }
 }
 
-function idbGet(key){
-  return new Promise((res,rej)=>{
-    if(!_idb){ res(null); return; }
-    const tx = _idb.transaction('data','readonly');
-    const req = tx.objectStore('data').get(key);
-    req.onsuccess = () => res(req.result||null);
-    req.onerror = () => res(null);
-  });
+async function idbGet(key){
+  try{
+    const db = await getIDB();
+    return new Promise((res)=>{
+      const tx = db.transaction('kv','readonly');
+      const req = tx.objectStore('kv').get(key);
+      req.onsuccess = ()=>res(req.result!=null?req.result:null);
+      req.onerror = ()=>res(null);
+    });
+  }catch(e){
+    // Fallback localStorage
+    try{
+      const v=localStorage.getItem('idb_'+key);
+      return(v&&v!=='__toolarge__')?v:null;
+    }catch(_){ return null; }
+  }
 }
 
-// localStorage as simple fallback for text-only data
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 
@@ -624,37 +649,50 @@ function setSyncStatus(type,msg){
   });
 }
 
-// ===== SAVE: IndexedDB (full data + images) =====
+// ===== SAVE =====
 async function save(){
+  const licJson = JSON.stringify(licenses);
+  const mntJson = JSON.stringify(maintenances);
+  // 1. IDB (primary — supports large data + img keys)
+  const ok1 = await idbSet('svc_lic', licJson);
+  const ok2 = await idbSet('svc_mnt', mntJson);
+  // 2. localStorage fallback (img refs only, no raw data)
   try{
-    // Records already contain __idb__ references (not raw data) — safe to store
-    await idbSet('svc_lic', JSON.stringify(licenses));
-    await idbSet('svc_mnt', JSON.stringify(maintenances));
-    // localStorage fallback (text only)
     const licTxt=licenses.map(l=>({...l,img:l.img&&l.img.startsWith('__idb__')?l.img:null}));
     const mntTxt=maintenances.map(m=>({...m,img:m.img&&m.img.startsWith('__idb__')?m.img:null}));
-    lsSet('svc_lic',JSON.stringify(licTxt));
-    lsSet('svc_mnt',JSON.stringify(mntTxt));
-    setSyncStatus('warn','⏳ محفوظ محلياً');
-    if(_db && _uid) _syncUp();
-  }catch(e){
-    console.error('Save error:',e);
-  }
+    localStorage.setItem('svc_lic_v2',JSON.stringify(licTxt));
+    localStorage.setItem('svc_mnt_v2',JSON.stringify(mntTxt));
+  }catch(_){}
+  setSyncStatus('warn','⏳ محفوظ محلياً');
+  if(_db && _uid) _syncUp();
 }
 
 async function loadLocal(){
-  // Try IndexedDB first (full data with images)
+  // 1. Try IndexedDB (has full data including img keys)
   try{
-    await openIDB();
+    await getIDB(); // ensure open
     const l = await idbGet('svc_lic');
     const m = await idbGet('svc_mnt');
-    if(l) licenses = JSON.parse(l);
-    if(m) maintenances = JSON.parse(m);
-    if(l||m) return; // success
+    if(l||m){
+      if(l) licenses=JSON.parse(l);
+      if(m) maintenances=JSON.parse(m);
+      return;
+    }
   }catch(e){}
-  // Fallback to localStorage (text only, no images)
+  // 2. Fallback: new localStorage key
   try{
-    const l=lsGet('svc_lic'), m=lsGet('svc_mnt');
+    const l=localStorage.getItem('svc_lic_v2');
+    const m=localStorage.getItem('svc_mnt_v2');
+    if(l||m){
+      if(l) licenses=JSON.parse(l);
+      if(m) maintenances=JSON.parse(m);
+      return;
+    }
+  }catch(e){}
+  // 3. Old localStorage key (migration)
+  try{
+    const l=localStorage.getItem('svc_lic');
+    const m=localStorage.getItem('svc_mnt');
     if(l) licenses=JSON.parse(l);
     if(m) maintenances=JSON.parse(m);
   }catch(e){}
@@ -691,13 +729,15 @@ async function _syncDown(){
       // Firebase is source of truth when logged in
       licenses = fbL.length > 0 ? fbL : licenses;
       maintenances = fbM.length > 0 ? fbM : maintenances;
-      // Save to both IndexedDB and localStorage
-      idbSet('svc_lic', JSON.stringify(licenses)).catch(()=>{});
-      idbSet('svc_mnt', JSON.stringify(maintenances)).catch(()=>{});
-      const licTxt=licenses.map(l=>({...l,img:l.img?'__img__':null}));
-      const mntTxt=maintenances.map(m=>({...m,img:m.img?'__img__':null}));
-      lsSet('svc_lic',JSON.stringify(licTxt));
-      lsSet('svc_mnt',JSON.stringify(mntTxt));
+      // Save locally after sync
+      await idbSet('svc_lic', JSON.stringify(licenses));
+      await idbSet('svc_mnt', JSON.stringify(maintenances));
+      try{
+        const licTxt=licenses.map(l=>({...l,img:l.img&&l.img.startsWith('__idb__')?l.img:null}));
+        const mntTxt=maintenances.map(m=>({...m,img:m.img&&m.img.startsWith('__idb__')?m.img:null}));
+        localStorage.setItem('svc_lic_v2',JSON.stringify(licTxt));
+        localStorage.setItem('svc_mnt_v2',JSON.stringify(mntTxt));
+      }catch(_){}
       renderDash();
       // Refresh current open page
       const ap=document.querySelector('.page.active');
