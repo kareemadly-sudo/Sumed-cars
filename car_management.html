@@ -627,14 +627,14 @@ function setSyncStatus(type,msg){
 // ===== SAVE: IndexedDB (full data + images) =====
 async function save(){
   try{
-    // Save full data (with images) to IndexedDB — no size limit issues
+    // Records already contain __idb__ references (not raw data) — safe to store
     await idbSet('svc_lic', JSON.stringify(licenses));
     await idbSet('svc_mnt', JSON.stringify(maintenances));
-    // Also save text-only to localStorage as emergency fallback
-    const licTxt = licenses.map(l=>({...l,img:l.img?'__img__':null}));
-    const mntTxt = maintenances.map(m=>({...m,img:m.img?'__img__':null}));
-    lsSet('svc_lic', JSON.stringify(licTxt));
-    lsSet('svc_mnt', JSON.stringify(mntTxt));
+    // localStorage fallback (text only)
+    const licTxt=licenses.map(l=>({...l,img:l.img&&l.img.startsWith('__idb__')?l.img:null}));
+    const mntTxt=maintenances.map(m=>({...m,img:m.img&&m.img.startsWith('__idb__')?m.img:null}));
+    lsSet('svc_lic',JSON.stringify(licTxt));
+    lsSet('svc_mnt',JSON.stringify(mntTxt));
     setSyncStatus('warn','⏳ محفوظ محلياً');
     if(_db && _uid) _syncUp();
   }catch(e){
@@ -956,11 +956,18 @@ function editLicense(i){
   const prevImg=document.getElementById('lic-prev-img');
   if(l.img){
     prevDiv.style.display='block';
-    if(l.img.startsWith('data:application/pdf')){
+    const isIdb=l.img.startsWith('__idb__:');
+    const isPdf=isIdb?l.img.includes('|pdf|'):l.img.startsWith('data:application/pdf');
+    if(isPdf){
       prevImg.style.display='none';
       const pt=document.getElementById('lic-pdf-tag');
       const pn=document.getElementById('lic-pdf-name');
-      if(pt){pt.style.display='block'; if(pn) pn.textContent='ملف PDF محفوظ';}
+      if(pt){pt.style.display='block'; if(pn) pn.textContent=isIdb?(l.img.split('|pdf|')[1]||'ملف PDF'):'ملف PDF';}
+    } else if(isIdb){
+      // Load image from IDB
+      idbGet(l.img.split('|')[0].replace('__idb__:','')).then(data=>{
+        if(data){prevImg.src=data;prevImg.style.display='block';prevImg.onclick=()=>openImgModal(l.img);}
+      });
     } else {
       prevImg.src=l.img; prevImg.style.display='block';
       prevImg.style.cursor='pointer';
@@ -994,14 +1001,10 @@ function viewLic(i){
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn btn-primary" onclick="closeModal('modal-lic');editLicense(${i})">✏️ تعديل الرخصة</button>
     </div>
-    ${l.img?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-      <p style="font-size:11px;color:var(--muted);margin-bottom:6px">📎 المستند المرفق — اضغط للعرض:</p>
-      ${l.img.startsWith('data:application/pdf')
-        ?`<div onclick="openImgModal('${l.img}')" style="background:#EBF5FB;border:1px solid #AED6F1;border-radius:7px;padding:10px 14px;font-size:13px;color:#1A5276;cursor:pointer">📄 ملف PDF — اضغط لفتحه</div>`
-        :`<img src="${l.img}" onclick="openImgModal('${l.img}')" style="max-height:200px;border-radius:7px;border:1px solid var(--border);cursor:pointer;display:block">`
-      }
-    </div>`:'<div style="margin-top:12px;padding:10px;background:var(--bg);border-radius:7px;font-size:12px;color:var(--muted);text-align:center">لا توجد صورة مرفقة</div>'}`;
+    ${l.img ? renderAttachment(l.img, i, 'lic') : '<div style="margin-top:12px;padding:10px;background:var(--bg);border-radius:7px;font-size:12px;color:var(--muted);text-align:center">لا توجد صورة مرفقة</div>'}`;
   openModal('modal-lic');
+  // Load image async if idb reference
+  if(l.img && l.img.startsWith('__idb__:')) resolveAttachment(l.img, i, 'lic');
 }
 
 function delLic(i){
@@ -1112,14 +1115,9 @@ function viewMnt(i){
       <div class="fg3 full"><label>بيان الإصلاح</label><textarea readonly style="min-height:75px">${m.desc||''}</textarea></div>
       <div class="fg3 full"><label>ملاحظات</label><textarea readonly style="min-height:50px">${m.notes||''}</textarea></div>
     </div>
-    ${m.img?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-      <p style="font-size:11px;color:var(--muted);margin-bottom:6px">📎 المستند المرفق — اضغط للعرض:</p>
-      ${m.img.startsWith('data:application/pdf')
-        ?`<div onclick="openImgModal('${m.img}')" style="background:#EBF5FB;border:1px solid #AED6F1;border-radius:7px;padding:10px 14px;font-size:13px;color:#1A5276;cursor:pointer">📄 ملف PDF — اضغط لفتحه</div>`
-        :`<img src="${m.img}" onclick="openImgModal('${m.img}')" style="max-height:200px;border-radius:7px;border:1px solid var(--border);cursor:pointer;display:block">`
-      }
-    </div>`:'<div style="margin-top:12px;padding:10px;background:var(--bg);border-radius:7px;font-size:12px;color:var(--muted);text-align:center">لا توجد صورة مرفقة</div>'}`;
+    ${m.img ? renderAttachment(m.img, i, 'mnt') : '<div style="margin-top:12px;padding:10px;background:var(--bg);border-radius:7px;font-size:12px;color:var(--muted);text-align:center">لا توجد صورة مرفقة</div>'}`;
   openModal('modal-mnt');
+  if(m.img && m.img.startsWith('__idb__:')) resolveAttachment(m.img, i, 'mnt');
 }
 
 function delMnt(i){
@@ -1159,9 +1157,57 @@ document.querySelectorAll('.mbg').forEach(m=>m.addEventListener('click',e=>{if(e
 function f2b64(file){return new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(r.result.split(',')[1]);};r.onerror=rej;r.readAsDataURL(file);})}
 
 // ===== IMAGE HANDLERS =====
-function openImgModal(src){
+// ===== ATTACHMENT HELPERS =====
+function renderAttachment(imgRef, idx, type){
+  if(!imgRef) return '';
+  const isIdb = imgRef.startsWith('__idb__:');
+  const isPdf = isIdb ? imgRef.includes('|pdf|') : imgRef.startsWith('data:application/pdf');
+  const fname = isIdb && isPdf ? imgRef.split('|pdf|')[1] : 'ملف PDF';
+  const div = `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <p style="font-size:11px;color:var(--muted);margin-bottom:6px">📎 المستند المرفق:</p>
+    <div id="att-${type}-${idx}">`;
+  if(isPdf){
+    return div+`<div onclick="openImgModal('${imgRef}')" style="background:#EBF5FB;border:1px solid #AED6F1;border-radius:8px;padding:12px 14px;font-size:13px;color:#1A5276;cursor:pointer;display:flex;align-items:center;gap:10px">
+      <span style="font-size:24px">📄</span>
+      <div><div style="font-weight:600">${fname||'ملف PDF'}</div><div style="font-size:11px;opacity:.7">اضغط لفتح الملف</div></div>
+    </div></div></div>`;
+  }
+  // Image: show placeholder until resolved
+  if(isIdb){
+    return div+`<div style="background:var(--bg);border-radius:7px;padding:14px;text-align:center;font-size:12px;color:var(--muted)">⏳ جاري تحميل الصورة...</div></div></div>`;
+  }
+  return div+`<img src="${imgRef}" onclick="openImgModal('${imgRef}')" style="max-height:200px;border-radius:7px;border:1px solid var(--border);cursor:pointer;display:block"></div></div>`;
+}
+
+async function resolveAttachment(imgRef, idx, type){
+  const parts = imgRef.split('|');
+  const key = parts[0].replace('__idb__:','');
+  const data = await idbGet(key);
+  const el = document.getElementById('att-'+type+'-'+idx);
+  if(!el || !data) return;
+  if(data.startsWith('data:application/pdf')){
+    const fname = parts[2]||'ملف PDF';
+    el.innerHTML=`<div onclick="openImgModal('${imgRef}')" style="background:#EBF5FB;border:1px solid #AED6F1;border-radius:8px;padding:12px 14px;font-size:13px;color:#1A5276;cursor:pointer;display:flex;align-items:center;gap:10px">
+      <span style="font-size:24px">📄</span>
+      <div><div style="font-weight:600">${fname}</div><div style="font-size:11px;opacity:.7">اضغط لفتح الملف</div></div>
+    </div>`;
+  } else {
+    el.innerHTML=`<img src="${data}" onclick="openImgModal('${imgRef}')" style="max-height:200px;border-radius:7px;border:1px solid var(--border);cursor:pointer;display:block">`;
+  }
+}
+
+async function openImgModal(src){
   if(!src) return;
-  if(src.startsWith('data:application/pdf') || src.startsWith('blob:')){
+  // Resolve IndexedDB reference
+  if(src.startsWith('__idb__:')){
+    const parts=src.split('|');
+    const key=parts[0].replace('__idb__:','');
+    const type=parts[1];
+    const data=await idbGet(key);
+    if(!data){ alert('الملف غير موجود في هذا الجهاز'); return; }
+    src=data;
+  }
+  if(src.startsWith('data:application/pdf')){
     var blob=dataURLtoBlob(src);
     var url=URL.createObjectURL(blob);
     window.open(url,'_blank');
@@ -1202,10 +1248,13 @@ function handleLicImg(event){
   const prevImg=document.getElementById('lic-prev-img');
   const pdfTag=document.getElementById('lic-pdf-tag');
   const pdfName=document.getElementById('lic-pdf-name');
+  const key='img_'+Date.now();
   if(file.type==='application/pdf'){
     const r=new FileReader();
     r.onload=function(e){
-      licImg=e.target.result;
+      const dataUrl=e.target.result;
+      idbSet(key, dataUrl).catch(()=>{});
+      licImg='__idb__:'+key+'|pdf|'+file.name;
       prevDiv.style.display='block';
       prevImg.style.display='none';
       pdfTag.style.display='block';
@@ -1215,7 +1264,8 @@ function handleLicImg(event){
   } else {
     compressImg(file).then(compressed=>{
       if(!compressed) return;
-      licImg=compressed;
+      idbSet(key, compressed).catch(()=>{});
+      licImg='__idb__:'+key+'|img';
       prevDiv.style.display='block';
       prevImg.src=compressed; prevImg.style.display='block';
       pdfTag.style.display='none';
@@ -1229,10 +1279,13 @@ function handleMntImg(event){
   const prevImg=document.getElementById('mnt-prev-img');
   const pdfTag=document.getElementById('mnt-pdf-tag');
   const pdfName=document.getElementById('mnt-pdf-name');
+  const key='img_'+Date.now();
   if(file.type==='application/pdf'){
     const r=new FileReader();
     r.onload=function(e){
-      mntImg=e.target.result;
+      const dataUrl=e.target.result;
+      idbSet(key, dataUrl).catch(()=>{});
+      mntImg='__idb__:'+key+'|pdf|'+file.name;
       prevDiv.style.display='block';
       prevImg.style.display='none';
       pdfTag.style.display='block';
@@ -1242,7 +1295,8 @@ function handleMntImg(event){
   } else {
     compressImg(file).then(compressed=>{
       if(!compressed) return;
-      mntImg=compressed;
+      idbSet(key, compressed).catch(()=>{});
+      mntImg='__idb__:'+key+'|img';
       prevDiv.style.display='block';
       prevImg.src=compressed; prevImg.style.display='block';
       pdfTag.style.display='none';
