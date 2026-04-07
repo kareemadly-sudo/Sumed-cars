@@ -702,9 +702,9 @@ async function _syncUp(){
   try{
     const {doc, setDoc} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
     const ref = doc(_db, 'users', _uid);
-    // Strip large images before syncing (keep only first 200KB per image)
-    const licSync = licenses.map(l=>({...l, img: l.img&&l.img.length<200000 ? l.img : (l.img?'__has_img__':null)}));
-    const mntSync = maintenances.map(m=>({...m, img: m.img&&m.img.length<200000 ? m.img : (m.img?'__has_img__':null)}));
+    // Store img key references only (actual data stays in local IDB)
+    const licSync = licenses.map(l=>({...l, img: l.img||null}));
+    const mntSync = maintenances.map(m=>({...m, img: m.img||null}));
     await setDoc(ref, {
       licenses: JSON.stringify(licSync),
       maintenances: JSON.stringify(mntSync),
@@ -1047,12 +1047,12 @@ function viewLic(i){
   if(l.img && l.img.startsWith('__idb__:')) resolveAttachment(l.img, i, 'lic');
 }
 
-function delLic(i){
-  if(confirm('هل تريد حذف هذه الرخصة؟')){licenses.splice(i,1);save();renderLic();renderDash();}
+async function delLic(i){
+  if(confirm('هل تريد حذف هذه الرخصة؟')){licenses.splice(i,1);await save();renderLic();renderDash();}
 }
 
 // ===== SAVE LICENSE =====
-function saveLicense(){
+async function saveLicense(){
   const plate=document.getElementById('lf-plate').value.trim();
   if(!plate){alert('يرجى إدخال رقم السيارة');return}
   const idx=document.getElementById('lic-edit-idx').value;
@@ -1072,17 +1072,16 @@ function saveLicense(){
     updatedAt:new Date().toISOString()
   };
   if(idx!==''){
-    // keep old img if no new one uploaded
     if(!licImg&&licenses[idx]?.img) obj.img=licenses[idx].img;
     obj.addedAt=licenses[idx].addedAt||obj.updatedAt;
     licenses[idx]=obj;
-    alert('✅ تم تحديث بيانات الرخصة!');
   } else {
     obj.addedAt=new Date().toISOString();
     licenses.push(obj);
-    alert('✅ تم حفظ الرخصة بنجاح!');
   }
-  save();clearLicForm();licImg=null;
+  await save(); // ← await: wait for IDB write to complete before navigating
+  clearLicForm();licImg=null;
+  alert('✅ تم الحفظ بنجاح');
   goPage('license');
 }
 
@@ -1160,12 +1159,12 @@ function viewMnt(i){
   if(m.img && m.img.startsWith('__idb__:')) resolveAttachment(m.img, i, 'mnt');
 }
 
-function delMnt(i){
-  if(confirm('هل تريد حذف هذه الفاتورة؟')){maintenances.splice(i,1);save();renderMnt();renderDash();}
+async function delMnt(i){
+  if(confirm('هل تريد حذف هذه الفاتورة؟')){maintenances.splice(i,1);await save();renderMnt();renderDash();}
 }
 
 // ===== SAVE MAINTENANCE =====
-function saveMnt(){
+async function saveMnt(){
   const plate=document.getElementById('mf-plate').value.trim();
   if(!plate){alert('يرجى إدخال رقم السيارة');return}
   maintenances.push({
@@ -1177,7 +1176,8 @@ function saveMnt(){
     notes:document.getElementById('mf-notes').value.trim(),
     img:mntImg||null,addedAt:new Date().toISOString()
   });
-  save();clrMntForm();mntImg=null;
+  await save(); // ← await: wait for IDB write to complete before navigating
+  clrMntForm();mntImg=null;
   alert('✅ تم حفظ الفاتورة بنجاح!');
   goPage('maintenance');
 }
@@ -1291,9 +1291,9 @@ function handleLicImg(event){
   const key='img_'+Date.now();
   if(file.type==='application/pdf'){
     const r=new FileReader();
-    r.onload=function(e){
+    r.onload=async function(e){
       const dataUrl=e.target.result;
-      idbSet(key, dataUrl).catch(()=>{});
+      await idbSet(key, dataUrl);
       licImg='__idb__:'+key+'|pdf|'+file.name;
       prevDiv.style.display='block';
       prevImg.style.display='none';
@@ -1302,9 +1302,9 @@ function handleLicImg(event){
     };
     r.readAsDataURL(file);
   } else {
-    compressImg(file).then(compressed=>{
+    compressImg(file).then(async compressed=>{
       if(!compressed) return;
-      idbSet(key, compressed).catch(()=>{});
+      await idbSet(key, compressed);
       licImg='__idb__:'+key+'|img';
       prevDiv.style.display='block';
       prevImg.src=compressed; prevImg.style.display='block';
@@ -1322,9 +1322,9 @@ function handleMntImg(event){
   const key='img_'+Date.now();
   if(file.type==='application/pdf'){
     const r=new FileReader();
-    r.onload=function(e){
+    r.onload=async function(e){
       const dataUrl=e.target.result;
-      idbSet(key, dataUrl).catch(()=>{});
+      await idbSet(key, dataUrl);
       mntImg='__idb__:'+key+'|pdf|'+file.name;
       prevDiv.style.display='block';
       prevImg.style.display='none';
@@ -1333,9 +1333,9 @@ function handleMntImg(event){
     };
     r.readAsDataURL(file);
   } else {
-    compressImg(file).then(compressed=>{
+    compressImg(file).then(async compressed=>{
       if(!compressed) return;
-      idbSet(key, compressed).catch(()=>{});
+      await idbSet(key, compressed);
       mntImg='__idb__:'+key+'|img';
       prevDiv.style.display='block';
       prevImg.src=compressed; prevImg.style.display='block';
@@ -1356,7 +1356,7 @@ function switchImportTab(tab){
 function handleExcelUpload(event){
   const file=event.target.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=function(e){
+  reader.onload=async function(e){
     try{
       const wb=XLSX.read(e.target.result,{type:'binary'});
       const preview=document.getElementById('xl-preview');
@@ -1419,7 +1419,7 @@ function handleExcelUpload(event){
         }
       }
 
-      save();
+      await save();
       preview.innerHTML=`<div style="background:#E8F8F5;border:1px solid #A9DFBF;border-radius:8px;padding:14px;font-size:13px;color:#1E8449;margin-top:8px">
         <strong>✅ تم الاستيراد بنجاح!</strong><br>
         رخص مستوردة: <strong>${importedLic}</strong><br>
@@ -1486,7 +1486,7 @@ function showColumnMapper(rows,src){
   openModal('modal-map');
 }
 
-function applyColumnMap(src){
+async function applyColumnMap(src){
   let count=0;
   _mapRows.forEach(row=>{
     const g=key=>{const sel=document.getElementById('map-'+key);return sel&&sel.value?row[sel.value]||'':''};
@@ -1502,7 +1502,7 @@ function applyColumnMap(src){
     });
     count++;
   });
-  save();closeModal('modal-map');
+  await save();closeModal('modal-map');
   alert(`✅ تم استيراد ${count} سجل بنجاح!`);
   goPage('license');
 }
