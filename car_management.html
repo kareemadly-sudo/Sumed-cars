@@ -582,7 +582,6 @@ let _idbReady = false;
 let _idbPromise = null;
 
 function getIDB(){
-  // Always return same promise — open once, reuse forever
   if(_idbPromise) return _idbPromise;
   _idbPromise = new Promise((res,rej)=>{
     try{
@@ -594,14 +593,28 @@ function getIDB(){
       req.onsuccess = e => {
         _idb = e.target.result;
         _idbReady = true;
+        // Handle unexpected database close (e.g. version change from another tab)
+        _idb.onclose = () => { _idbPromise = null; _idb = null; _idbReady = false; };
+        _idb.onversionchange = () => { _idb.close(); _idbPromise = null; _idb = null; _idbReady = false; };
         res(_idb);
       };
       req.onerror = () => { _idbPromise=null; rej(req.error); };
-      req.onblocked = () => { _idbPromise=null; rej(new Error('IDB blocked')); };
+      req.onblocked = () => {
+        // Try closing other tabs — still resolve after delay
+        setTimeout(()=>{ _idbPromise=null; rej(new Error('IDB blocked — please close other tabs')); }, 3000);
+      };
     }catch(e){ _idbPromise=null; rej(e); }
   });
   return _idbPromise;
 }
+
+// Warn before closing if unsaved pending sync
+window.addEventListener('beforeunload', e => {
+  if(lsGet('svc_pending')==='1'){
+    e.preventDefault();
+    e.returnValue = 'البيانات لم تتم مزامنتها بعد. هل تريد المغادرة؟';
+  }
+});
 
 async function idbSet(key, val){
   try{
@@ -650,42 +663,56 @@ function setSyncStatus(type,msg){
 }
 
 // ===== SAVE =====
+let _saveTimer = null;
 async function save(){
   const licJson = JSON.stringify(licenses);
   const mntJson = JSON.stringify(maintenances);
-  // 1. IDB (primary — supports large data + img keys)
-  const ok1 = await idbSet('svc_lic', licJson);
-  const ok2 = await idbSet('svc_mnt', mntJson);
-  // 2. localStorage fallback (img refs only, no raw data)
+  // 1. IDB primary — with retry
+  let ok1 = false, ok2 = false;
+  for(let attempt=0; attempt<3; attempt++){
+    try{
+      ok1 = await idbSet('svc_lic', licJson);
+      ok2 = await idbSet('svc_mnt', mntJson);
+      if(ok1 && ok2) break;
+    }catch(e){
+      if(attempt===2) console.warn('IDB save failed after 3 attempts', e);
+      await new Promise(r=>setTimeout(r,200));
+    }
+  }
+  // 2. localStorage fallback — always keep in sync
   try{
     const licTxt=licenses.map(l=>({...l,img:l.img&&l.img.startsWith('__idb__')?l.img:null}));
     const mntTxt=maintenances.map(m=>({...m,img:m.img&&m.img.startsWith('__idb__')?m.img:null}));
     localStorage.setItem('svc_lic_v2',JSON.stringify(licTxt));
     localStorage.setItem('svc_mnt_v2',JSON.stringify(mntTxt));
   }catch(_){}
-  setSyncStatus('warn','⏳ محفوظ محلياً');
-  if(_db && _uid) _syncUp();
+  setSyncStatus('warn','⏳ محفوظ محلياً — جاري التزامن...');
+  // Debounce Firebase sync — don't spam on rapid saves
+  if(_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(()=>{ if(_db && _uid) _syncUp(); }, 1500);
 }
 
 async function loadLocal(){
-  // 1. Try IndexedDB (has full data including img keys)
+  // 1. Try IndexedDB first (has full data including img keys)
   try{
-    await getIDB(); // ensure open
+    await getIDB();
     const l = await idbGet('svc_lic');
     const m = await idbGet('svc_mnt');
-    if(l||m){
-      if(l) licenses=JSON.parse(l);
-      if(m) maintenances=JSON.parse(m);
+    if(l || m){
+      try{ if(l) licenses = JSON.parse(l); }catch(e){ licenses=[]; }
+      try{ if(m) maintenances = JSON.parse(m); }catch(e){ maintenances=[]; }
       return;
     }
-  }catch(e){}
-  // 2. Fallback: new localStorage key
+  }catch(e){ console.warn('IDB load failed, trying localStorage', e); }
+  // 2. Fallback: localStorage v2
   try{
     const l=localStorage.getItem('svc_lic_v2');
     const m=localStorage.getItem('svc_mnt_v2');
     if(l||m){
-      if(l) licenses=JSON.parse(l);
-      if(m) maintenances=JSON.parse(m);
+      try{ if(l) licenses=JSON.parse(l); }catch(e){ licenses=[]; }
+      try{ if(m) maintenances=JSON.parse(m); }catch(e){ maintenances=[]; }
+      // Migrate to IDB
+      try{ await idbSet('svc_lic', JSON.stringify(licenses)); await idbSet('svc_mnt', JSON.stringify(maintenances)); }catch(_){}
       return;
     }
   }catch(e){}
@@ -693,60 +720,162 @@ async function loadLocal(){
   try{
     const l=localStorage.getItem('svc_lic');
     const m=localStorage.getItem('svc_mnt');
-    if(l) licenses=JSON.parse(l);
-    if(m) maintenances=JSON.parse(m);
+    if(l) { try{ licenses=JSON.parse(l); }catch(e){ licenses=[]; } }
+    if(m) { try{ maintenances=JSON.parse(m); }catch(e){ maintenances=[]; } }
+    // Migrate to IDB and new keys
+    if(l||m){
+      try{ await idbSet('svc_lic', JSON.stringify(licenses)); await idbSet('svc_mnt', JSON.stringify(maintenances)); }catch(_){}
+      try{ localStorage.setItem('svc_lic_v2', l||'[]'); localStorage.setItem('svc_mnt_v2', m||'[]'); }catch(_){}
+    }
   }catch(e){}
 }
 
 async function _syncUp(){
+  lsSet('svc_pending','1'); // mark pending immediately before async work
   try{
-    const {doc, setDoc} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
+    const {doc, setDoc, collection, writeBatch} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
+
+    // For Firestore we keep only the IDB key reference (no raw image data)
+    // because Firestore has a strict 1MB per-document limit
+    // Images stay in local IDB and are synced separately via _syncImgChunks
+    function stripImgForFirestore(ref){
+      if(!ref) return null;
+      if(ref.startsWith('__idb__:') && ref.includes('|data:')){
+        // Remove embedded data — keep only the key reference part
+        return ref.substring(0, ref.indexOf('|data:'));
+      }
+      return ref;
+    }
+
+    const licSync = licenses.map(l=>({...l, img: stripImgForFirestore(l.img)}));
+    const mntSync = maintenances.map(m=>({...m, img: stripImgForFirestore(m.img)}));
+
     const ref = doc(_db, 'users', _uid);
-    // Store img key references only (actual data stays in local IDB)
-    const licSync = licenses.map(l=>({...l, img: l.img||null}));
-    const mntSync = maintenances.map(m=>({...m, img: m.img||null}));
     await setDoc(ref, {
       licenses: JSON.stringify(licSync),
       maintenances: JSON.stringify(mntSync),
       updatedAt: new Date().toISOString()
     });
+
+    // Sync images as separate small documents (each under 1MB)
+    await _syncImgChunks(collection, writeBatch, doc);
+
     setSyncStatus('ok','✅ متزامن — '+new Date().toLocaleTimeString('ar-EG'));
     lsSet('svc_pending','0');
   }catch(e){
-    setSyncStatus('warn','⚠️ لم يتم التزامن — سيحاول لاحقاً');
+    console.warn('Firebase sync error:', e);
+    setSyncStatus('warn','⚠️ لم يتم التزامن — البيانات محفوظة محلياً');
     lsSet('svc_pending','1');
+  }
+}
+
+// Sync images as separate Firestore documents — each stored as its own doc
+// to avoid the 1MB per-document Firestore limit
+async function _syncImgChunks(collection, writeBatch, doc){
+  try{
+    // Gather all unique IDB image keys from licenses and maintenances
+    const imgKeys = new Set();
+    [...licenses, ...maintenances].forEach(item=>{
+      if(item.img && item.img.startsWith('__idb__:')){
+        const key = item.img.split('|')[0].replace('__idb__:','');
+        imgKeys.add(key);
+      }
+    });
+    if(!imgKeys.size) return;
+
+    const batch = writeBatch(_db);
+    let batchCount = 0;
+    const imgCol = collection(_db, 'users', _uid, 'imgs');
+
+    for(const key of imgKeys){
+      const data = await idbGet(key);
+      if(!data) continue;
+      // Firestore limit: 1MB per doc. Base64 images up to ~750KB safe.
+      // If larger, skip (stays local only)
+      if(data.length > 900000){
+        console.warn('Image too large for Firestore sync (>900KB), kept local only:', key);
+        continue;
+      }
+      batch.set(doc(imgCol, key), { data, updatedAt: new Date().toISOString() });
+      batchCount++;
+      // Firestore batch limit is 500 ops — flush early if needed
+      if(batchCount >= 400){
+        await batch.commit(); batchCount = 0;
+      }
+    }
+    if(batchCount > 0) await batch.commit();
+  }catch(e){
+    console.warn('Image chunk sync failed:', e);
+    // Non-fatal — main data is already saved
+  }
+}
+
+async function _loadImgChunks(collection, doc){
+  try{
+    const {getDocs} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
+    const imgCol = collection(_db, 'users', _uid, 'imgs');
+    const snap = await getDocs(imgCol);
+    for(const d of snap.docs){
+      const existing = await idbGet(d.id);
+      if(!existing && d.data().data){
+        await idbSet(d.id, d.data().data);
+      }
+    }
+  }catch(e){
+    console.warn('Image chunk load failed:', e);
   }
 }
 
 async function _syncDown(){
   try{
-    const {doc, getDoc} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
+    const {doc, getDoc, collection} = await import('https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js');
     const snap = await getDoc(doc(_db, 'users', _uid));
     if(snap.exists()){
       const d = snap.data();
       const fbL = d.licenses ? JSON.parse(d.licenses) : [];
       const fbM = d.maintenances ? JSON.parse(d.maintenances) : [];
       // Firebase is source of truth when logged in
-      licenses = fbL.length > 0 ? fbL : licenses;
-      maintenances = fbM.length > 0 ? fbM : maintenances;
-      // Save locally after sync
-      await idbSet('svc_lic', JSON.stringify(licenses));
-      await idbSet('svc_mnt', JSON.stringify(maintenances));
-      try{
-        const licTxt=licenses.map(l=>({...l,img:l.img&&l.img.startsWith('__idb__')?l.img:null}));
-        const mntTxt=maintenances.map(m=>({...m,img:m.img&&m.img.startsWith('__idb__')?m.img:null}));
-        localStorage.setItem('svc_lic_v2',JSON.stringify(licTxt));
-        localStorage.setItem('svc_mnt_v2',JSON.stringify(mntTxt));
-      }catch(_){}
+      if(fbL.length > 0 || fbM.length > 0){
+        licenses = fbL.length > 0 ? fbL : licenses;
+        maintenances = fbM.length > 0 ? fbM : maintenances;
+
+        // Restore images from Firestore imgs sub-collection into local IDB
+        await _loadImgChunks(collection, doc);
+
+        // Re-hydrate IDB references (clean up any embedded |data: if present)
+        async function rehydrateImg(ref){
+          if(!ref) return null;
+          if(ref.startsWith('__idb__:') && ref.includes('|data:')){
+            // Strip embedded data — it is now stored in IDB via _loadImgChunks
+            return ref.substring(0, ref.indexOf('|data:'));
+          }
+          return ref;
+        }
+        for(let i=0; i<licenses.length; i++){
+          licenses[i].img = await rehydrateImg(licenses[i].img);
+        }
+        for(let i=0; i<maintenances.length; i++){
+          maintenances[i].img = await rehydrateImg(maintenances[i].img);
+        }
+
+        // Save fully hydrated data to local IDB
+        await idbSet('svc_lic', JSON.stringify(licenses));
+        await idbSet('svc_mnt', JSON.stringify(maintenances));
+        try{
+          const licTxt=licenses.map(l=>({...l,img:l.img&&l.img.startsWith('__idb__')?l.img:null}));
+          const mntTxt=maintenances.map(m=>({...m,img:m.img&&m.img.startsWith('__idb__')?m.img:null}));
+          localStorage.setItem('svc_lic_v2',JSON.stringify(licTxt));
+          localStorage.setItem('svc_mnt_v2',JSON.stringify(mntTxt));
+        }catch(_){}
+      }
       renderDash();
       // Refresh current open page
       const ap=document.querySelector('.page.active');
       if(ap){ const pid=ap.id.replace('page-',''); if(pid==='license')renderLic(); if(pid==='maintenance')renderMnt(); }
       setSyncStatus('ok','✅ متزامن — '+new Date(d.updatedAt||Date.now()).toLocaleTimeString('ar-EG'));
     } else {
-      // No data on Firebase yet
+      // No data on Firebase yet — push local data up
       if(licenses.length || maintenances.length){
-        // Push local data to Firebase
         _syncUp();
         setSyncStatus('info','⬆️ جاري رفع البيانات المحلية...');
       } else {
@@ -755,7 +884,8 @@ async function _syncDown(){
     }
     if(lsGet('svc_pending')==='1') _syncUp();
   }catch(e){
-    setSyncStatus('warn','⚠️ تعذر التحميل من Firebase');
+    console.warn('Firebase syncDown error:', e);
+    setSyncStatus('warn','⚠️ تعذر التحميل من Firebase — البيانات المحلية متاحة');
   }
 }
 
@@ -1079,9 +1209,14 @@ async function saveLicense(){
     obj.addedAt=new Date().toISOString();
     licenses.push(obj);
   }
-  await save(); // ← await: wait for IDB write to complete before navigating
+  setSyncStatus('info','⏳ جاري الحفظ...');
+  try{
+    await save();
+  }catch(e){
+    console.error('Save error:', e);
+  }
   clearLicForm();licImg=null;
-  alert('✅ تم الحفظ بنجاح');
+  setSyncStatus('ok','✅ تم الحفظ بنجاح');
   goPage('license');
 }
 
@@ -1176,9 +1311,14 @@ async function saveMnt(){
     notes:document.getElementById('mf-notes').value.trim(),
     img:mntImg||null,addedAt:new Date().toISOString()
   });
-  await save(); // ← await: wait for IDB write to complete before navigating
+  setSyncStatus('info','⏳ جاري الحفظ...');
+  try{
+    await save();
+  }catch(e){
+    console.error('Save error:', e);
+  }
   clrMntForm();mntImg=null;
-  alert('✅ تم حفظ الفاتورة بنجاح!');
+  setSyncStatus('ok','✅ تم حفظ الفاتورة بنجاح');
   goPage('maintenance');
 }
 
